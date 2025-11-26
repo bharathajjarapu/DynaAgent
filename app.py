@@ -5,7 +5,8 @@ import streamlit as st
 from agents import Agent, Runner
 from dotenv import load_dotenv
 
-from tools import calculator, search
+from prompts import analyze, planner, synthesize
+from tools import build, calculator, search
 
 load_dotenv()
 
@@ -20,31 +21,55 @@ class DynaAgent:
             model="gpt-4.1-mini",
         )
 
-    def create(self, name: str, role: str, instructions: str):
+    def create(
+        self, name: str, role: str, instructions: str, model: str = "gpt-4.1-mini"
+    ):
         agent = Agent(
             name=name,
             instructions=f"You are a {role}. {instructions}",
             tools=self.tools,
-            model="gpt-4.1-mini",
+            model=model,
         )
         self.agents[name] = agent
         return agent
 
     async def execute(self, question: str, callback=None):
+        # Tool Analysis
+        if callback:
+            callback("tool_analysis", None)
+
+        tool_result = await Runner.run(self.coordinator, analyze(question))
+        tool_text = tool_result.final_output
+
+        try:
+            if "{" in tool_text and "}" in tool_text:
+                start = tool_text.find("{")
+                end = tool_text.rfind("}") + 1
+                tool_data = json.loads(tool_text[start:end])
+
+                if tool_data.get("needs_new_tools") and tool_data.get("tools"):
+                    if callback:
+                        callback("creating_tools", tool_data["tools"])
+
+                    for tool_spec in tool_data["tools"]:
+                        success = await build(self.coordinator, self.tools, tool_spec)
+                        if success:
+                            self.coordinator.tools = self.tools
+        except:
+            pass
+
+        # Agent Planning
         if callback:
             callback("planning", None)
 
-        plan_prompt = f'Analyze this task and determine what specialized agents are needed: {question}. Make sure the Names are Single Word like WebSearchAgent, MathAgent... Return ONLY valid JSON in this exact format: {{"agents":[{{"name":"AgentName","role":"RoleDescription","instructions":"What agent should do"}}],"plan":["step1","step2"]}}'
-
-        plan_result = await Runner.run(self.coordinator, plan_prompt)
+        plan_result = await Runner.run(self.coordinator, planner(question))
         plan_text = plan_result.final_output
 
         try:
             if "{" in plan_text and "}" in plan_text:
                 start = plan_text.find("{")
                 end = plan_text.rfind("}") + 1
-                json_str = plan_text[start:end]
-                plan_data = json.loads(json_str)
+                plan_data = json.loads(plan_text[start:end])
             else:
                 raise ValueError("No JSON")
         except:
@@ -54,6 +79,7 @@ class DynaAgent:
                         "name": "Solver",
                         "role": "Problem Solver",
                         "instructions": "Solve the task",
+                        "model": "gpt-4.1-mini",
                     }
                 ],
             }
@@ -61,7 +87,12 @@ class DynaAgent:
         agents_list = plan_data.get("agents", [])
         if not agents_list:
             agents_list = [
-                {"name": "Solver", "role": "Problem Solver", "instructions": "Solve"}
+                {
+                    "name": "Solver",
+                    "role": "Problem Solver",
+                    "instructions": "Solve",
+                    "model": "gpt-4.1-mini",
+                }
             ]
 
         if callback:
@@ -71,7 +102,8 @@ class DynaAgent:
             name = spec.get("name", "Worker")
             role = spec.get("role", "Assistant")
             instructions = spec.get("instructions", "Help solve the task")
-            self.create(name, role, instructions)
+            model = spec.get("model", "gpt-4.1-mini")
+            self.create(name, role, instructions, model)
 
         results = []
         for agent_name, agent in list(self.agents.items()):
@@ -88,14 +120,13 @@ class DynaAgent:
         if callback:
             callback("finalizing", None)
 
-        results_summary = "\n".join([f"- {r['agent']}: {r['output']}" for r in results])
-        synthesis_prompt = f"Based on these agent results, provide ONLY the final answer:\n{results_summary}\n\nFinal answer:"
+        results_text = "\n".join([f"- {r['agent']}: {r['output']}" for r in results])
 
         try:
-            final = await Runner.run(self.coordinator, synthesis_prompt)
+            final = await Runner.run(self.coordinator, synthesize(results_text))
             answer = final.final_output
         except:
-            answer = results_summary if results else "No results"
+            answer = results_text if results else "No results"
 
         return answer, results
 
@@ -123,6 +154,18 @@ st.markdown(
         color: #666;
         font-size: 0.9rem;
     }
+    .tool {
+        background: #f8f9fa;
+        padding: 0.75rem;
+        margin: 0.4rem 0;
+        border-radius: 4px;
+        border: 1px solid #dee2e6;
+    }
+    .tool-name {
+        font-weight: 600;
+        color: #495057;
+        font-size: 0.9rem;
+    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -134,25 +177,46 @@ question = st.text_input("Question", placeholder="Ask anything...")
 
 if st.button("Submit"):
     if question:
+        tool_area = st.empty()
         planning_area = st.empty()
         agents_area = st.empty()
         working_area = st.empty()
         result_area = st.empty()
 
         def update(phase, data):
-            if phase == "planning":
-                planning_area.info("Planning")
+            if phase == "tool_analysis":
+                tool_area.info("Analyzing tools needed")
+
+            elif phase == "creating_tools":
+                tool_area.empty()
+                with tool_area.container():
+                    st.subheader("Tools Created")
+                    for tool in data:
+                        st.markdown(
+                            f"""
+                        <div class="tool">
+                            <div class="tool-name">🔧 {tool["name"]}</div>
+                        </div>
+                        """,
+                            unsafe_allow_html=True,
+                        )
+
+            elif phase == "planning":
+                if not data:
+                    tool_area.empty()
+                planning_area.info("Planning agents")
 
             elif phase == "agents":
                 planning_area.empty()
                 with agents_area.container():
                     st.subheader("Agents")
                     for agent in data:
+                        model_display = agent.get("model", "gpt-4.1-mini")
                         st.markdown(
                             f"""
                         <div class="agent">
                             <div class="agent-name">{agent["name"]}</div>
-                            <div class="agent-role">{agent["role"]}</div>
+                            <div class="agent-role">{agent["role"]} • {model_display}</div>
                         </div>
                         """,
                             unsafe_allow_html=True,

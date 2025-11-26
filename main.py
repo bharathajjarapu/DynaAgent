@@ -1,11 +1,12 @@
-import asyncio
-import json
 import sys
+import json
+import asyncio
 
-from agents import Agent
 from dotenv import load_dotenv
+from agents import Agent, Runner
 
-from tools import calculator, search
+from tools import build, calculator, search
+from prompts import analyze, planner, synthesize
 
 load_dotenv()
 
@@ -21,12 +22,14 @@ class DynaAgent:
             model="gpt-4.1-mini",
         )
 
-    def create(self, name: str, role: str, instructions: str):
+    def create(
+        self, name: str, role: str, instructions: str, model: str = "gpt-4.1-mini"
+    ):
         agent = Agent(
             name=name,
             instructions=f"You are a {role}. {instructions}",
             tools=self.tools,
-            model="gpt-4.1-mini",
+            model=model,
         )
         self.agents[name] = agent
         return agent
@@ -34,38 +37,56 @@ class DynaAgent:
     async def execute(self, question: str):
         print(f"\n=== Question ===\n{question}\n")
 
-        # Planning
-        print("=== Planning ===")
-        plan_prompt = f'Analyze this task and determine what specialized agents are needed: {question}. Make sure the Names are Single Word like WebSearchAgent, MathAgent... Return ONLY valid JSON in this exact format: {{"agents":[{{"name":"AgentName","role":"RoleDescription","instructions":"What agent should do"}}],"plan":["step1","step2"]}}'
+        # Tool Analysis
+        print("=== Tool Analysis ===")
+        tool_result = await Runner.run(self.coordinator, analyze(question))
+        tool_text = tool_result.final_output
+        print(f"Tool Analysis: {tool_text}\n")
 
-        from agents import Runner
+        try:
+            if "{" in tool_text and "}" in tool_text:
+                start = tool_text.find("{")
+                end = tool_text.rfind("}") + 1
+                tool_data = json.loads(tool_text[start:end])
 
-        plan_result = await Runner.run(self.coordinator, plan_prompt)
+                if tool_data.get("needs_new_tools") and tool_data.get("tools"):
+                    print("=== Creating Tools ===")
+                    for tool_spec in tool_data["tools"]:
+                        print(f"Creating: {tool_spec['name']}...")
+                        success = await build(self.coordinator, self.tools, tool_spec)
+                        if success:
+                            self.coordinator.tools = self.tools
+                            print(f"✓ Created: {tool_spec['name']}")
+                    print()
+        except Exception as e:
+            print(f"Tool creation skipped: {e}\n")
+
+        # Agent Planning
+        print("=== Agent Planning ===")
+        plan_result = await Runner.run(self.coordinator, planner(question))
         plan_text = plan_result.final_output
         print(f"Plan: {plan_text}\n")
 
-        # Parse plan
         try:
             if "{" in plan_text and "}" in plan_text:
                 start = plan_text.find("{")
                 end = plan_text.rfind("}") + 1
-                json_str = plan_text[start:end]
-                plan_data = json.loads(json_str)
+                plan_data = json.loads(plan_text[start:end])
             else:
                 raise ValueError("No JSON found")
-        except:
+        except Exception:
             plan_data = {
                 "agents": [
                     {
                         "name": "Solver",
                         "role": "Problem Solver",
-                        "instructions": "Solve the given task using available tools",
+                        "instructions": "Solve the task",
                     }
                 ],
-                "plan": ["Analyze question", "Execute solution"],
+                "plan": ["Analyze and solve"],
             }
 
-        # Creating agents
+        # Creating Agents
         print("=== Creating Agents ===")
         agents_created = plan_data.get("agents", [])
         if not agents_created:
@@ -81,15 +102,15 @@ class DynaAgent:
             name = spec.get("name", "Worker")
             role = spec.get("role", "Assistant")
             instructions = spec.get("instructions", "Help solve the task")
-            self.create(name, role, instructions)
+            model = spec.get("model", "gpt-4.1-mini")
+            self.create(name, role, instructions, model)
             print(f"✓ Created: {name} ({role})")
         print()
 
         # Executing
         print("=== Executing ===")
         results = []
-        agent_items = list(self.agents.items())
-        for agent_name, agent in agent_items:
+        for agent_name, agent in list(self.agents.items()):
             print(f"Running: {agent_name}...")
             try:
                 await asyncio.sleep(2)
@@ -103,17 +124,16 @@ class DynaAgent:
 
         # Synthesis
         print("=== Synthesis ===")
-        results_summary = "\n".join([f"- {r['agent']}: {r['output']}" for r in results])
-        synthesis_prompt = f"Based on these agent results, provide ONLY the final answer (no JSON, no formatting, just the direct answer):\n{results_summary}\n\nFinal answer:"
+        results = "\n".join([f"- {r['agent']}: {r['output']}" for r in results])
 
         try:
             await asyncio.sleep(2)
-            final = await Runner.run(self.coordinator, synthesis_prompt)
+            final = await Runner.run(self.coordinator, synthesize(results))
             answer = final.final_output
             print(f"Final Answer: {answer}\n")
         except Exception as e:
             print(f"Synthesis failed: {e}")
-            answer = results_summary if results else "No results available"
+            answer = results if results else "No results available"
             print(f"Final Answer (from raw results): {answer}\n")
 
         return answer
