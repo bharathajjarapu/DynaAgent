@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from agents import Agent, Runner
 
 from tools import build, calculator, search
-from prompts import analyze, note, planner, synthesize, work
+from prompts import analyze, judge, note, planner, route, synthesize, work
 
 load_dotenv()
 
@@ -22,7 +22,7 @@ class DynaAgent:
             name="Coordinator",
             instructions="You are a coordinator that plans and synthesizes results",
             tools=self.tools,
-            model="gpt-4.1-mini",
+            model="gpt-5.4",
         )
 
     def pick(self, names=None):
@@ -42,7 +42,7 @@ class DynaAgent:
         name: str,
         role: str,
         instructions: str,
-        model: str = "gpt-4.1-mini",
+        model: str = "gpt-5-mini",
         tool_names=None,
     ):
         tools = self.pick(tool_names)
@@ -88,8 +88,30 @@ class DynaAgent:
             print(f"✗ {name} failed: {e}")
             return {"agent": name, "output": f"Error: {str(e)}"}
 
+    async def pickpath(self, question: str):
+        try:
+            result = await Runner.run(self.coordinator, route(question))
+            text = result.final_output
+
+            if "{" in text and "}" in text:
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                data = json.loads(text[start:end])
+                return bool(data.get("direct")), data.get("answer", "")
+        except Exception:
+            pass
+
+        return False, ""
+
     async def execute(self, question: str):
         print(f"\n=== Question ===\n{question}\n")
+
+        print("=== Route Check ===")
+        direct, answer = await self.pickpath(question)
+        if direct and answer:
+            print("Direct reply selected\n")
+            print(f"Final Answer: {answer}\n")
+            return answer
 
         # Tool Analysis
         print("=== Tool Analysis ===")
@@ -110,7 +132,7 @@ class DynaAgent:
                             print(f"✓ Reusing: {tool_spec['name']}")
                             continue
                         print(f"Creating: {tool_spec['name']}...")
-                        tool = await build(self.coordinator, self.tools, tool_spec)
+                        tool, code, prompt = await build(self.coordinator, self.tools, tool_spec)
                         if tool:
                             self.tool_map[tool_spec["name"]] = tool
                             self.coordinator.tools = self.tools
@@ -139,11 +161,12 @@ class DynaAgent:
                         "name": "Solver",
                         "role": "Problem Solver",
                         "instructions": "Solve the task",
+                        "model": "gpt-5-mini",
                         "tools": ["calculator", "search"],
                     }
                 ],
                 "plan": ["Analyze and solve"],
-                "rounds": 1,
+                "maxrounds": 1,
             }
 
         # Creating Agents
@@ -155,6 +178,7 @@ class DynaAgent:
                     "name": "Solver",
                     "role": "Problem Solver",
                     "instructions": "Solve the task",
+                    "model": "gpt-5-mini",
                     "tools": ["calculator", "search"],
                 }
             ]
@@ -163,7 +187,7 @@ class DynaAgent:
             name = spec.get("name", "Worker")
             role = spec.get("role", "Assistant")
             instructions = spec.get("instructions", "Help solve the task")
-            model = spec.get("model", "gpt-4.1-mini")
+            model = spec.get("model", "gpt-5-mini")
             tool_names = spec.get("tools")
             reusing = name in self.agents
             self.create(name, role, instructions, model, tool_names)
@@ -171,16 +195,16 @@ class DynaAgent:
             print(f"✓ {action}: {name} ({role})")
         print()
 
-        rounds = plan_data.get("rounds", 2)
+        maxrounds = plan_data.get("maxrounds", plan_data.get("max_rounds", plan_data.get("rounds", 2)))
         try:
-            rounds = int(rounds)
+            maxrounds = int(maxrounds)
         except Exception:
-            rounds = 2
-        rounds = 1 if rounds < 1 else 2 if rounds > 2 else rounds
+            maxrounds = 2
+        maxrounds = 1 if maxrounds < 1 else 3 if maxrounds > 3 else maxrounds
 
         print("=== Executing ===")
         results = []
-        for rnd in range(1, rounds + 1):
+        for rnd in range(1, maxrounds + 1):
             print(f"--- Round {rnd} ---")
             jobs = [
                 self.run(agent_name, agent, question, rnd)
@@ -191,11 +215,28 @@ class DynaAgent:
             for item in results:
                 self.mem["outs"][item["agent"]] = item["output"]
 
-            if rnd < rounds:
-                print("=== Coordinator Note ===")
+            if rnd < maxrounds:
+                print("=== Checking Round ===")
                 results_text = "\n".join(
                     [f"- {r['agent']}: {r['output']}" for r in results]
                 )
+                done = False
+                try:
+                    check = await Runner.run(self.coordinator, judge(question, results_text, rnd))
+                    text = check.final_output
+                    if "{" in text and "}" in text:
+                        start = text.find("{")
+                        end = text.rfind("}") + 1
+                        data = json.loads(text[start:end])
+                        done = bool(data.get("done"))
+                except Exception:
+                    done = rnd > 1
+
+                if done:
+                    print("Round is enough\n")
+                    break
+
+                print("=== Coordinator Note ===")
                 msg = await Runner.run(self.coordinator, note(question, results_text, rnd))
                 note_text = msg.final_output
                 self.mem["notes"].append(note_text)
