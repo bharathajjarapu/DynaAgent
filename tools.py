@@ -49,8 +49,8 @@ async def build(coordinator, tools_list, spec):
             decorated_tool = function_tool(tool_func)
             tools_list.append(decorated_tool)
             print(f"🔧 Tool {spec['name']} created and ready")
-            return True
+            return decorated_tool
     except Exception as e:
         print(f"✗ Tool creation failed: {e}")
 
-    return False
+    return None

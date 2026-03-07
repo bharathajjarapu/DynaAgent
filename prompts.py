@@ -31,13 +31,47 @@ def planner(question):
     return f"""
     Analyze this task and determine what specialized agents are needed: {question}.
     Make sure the Names are Single Word like WebSearchAgent, MathAgent...
+    Assign only the needed tools to each agent from: calculator, search, or newly created tools.
     Select appropriate model for each agent:
     - Simple tasks (only for summarization) -> gpt-4.1-nano
     - Medium tasks (planning, web search, API calls) -> gpt-4.1-mini
     - Complex tasks (analysis, synthesis) -> gpt-4.1
     - Very Complex tasks (multi-step reasoning) -> gpt-5.1
     Return ONLY valid JSON in this exact format:
-    {{"agents":[{{"name":"AgentName","role":"RoleDescription","instructions":"What agent should do","model":"gpt-4.1-mini"}}],"plan":["step1","step2"]}}
+    {{"agents":[{{"name":"AgentName","role":"RoleDescription","instructions":"What agent should do","model":"gpt-4.1-mini","tools":["search"]}}],"plan":["step1","step2"],"rounds":2}}
+    """
+
+def work(name, role, question, mem, rnd):
+    return f"""
+    You are {name}, a {role}.
+    Round: {rnd}
+    Task: {question}
+
+    Shared context from coordinator:
+    {mem}
+
+    Rules:
+    - Focus on your role and assigned tools
+    - Reuse useful facts from shared context
+    - Add new useful work only
+    - If another agent should use a fact, say it clearly
+    Return ONLY plain text.
+    """
+
+def note(question, results, rnd):
+    return f"""
+    You are coordinating agents for this task: {question}
+    Round finished: {rnd}
+
+    Agent results:
+    {results}
+
+    Create a short shared note for the next round.
+    Include:
+    - agreed facts
+    - missing gaps
+    - what each agent should focus on next
+    Return ONLY plain text.
     """
 
 def synthesize(results):
