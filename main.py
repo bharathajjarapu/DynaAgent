@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from agents import Agent, Runner
 
 from tools import build, calculator, search
-from prompts import analyze, planner, synthesize
+from prompts import analyze, note, planner, synthesize, work
 
 load_dotenv()
 
@@ -14,7 +14,10 @@ load_dotenv()
 class DynaAgent:
     def __init__(self):
         self.agents = {}
-        self.tools = [calculator, search]
+        self.info = {}
+        self.mem = {"notes": [], "outs": {}}
+        self.tool_map = {"calculator": calculator, "search": search}
+        self.tools = list(self.tool_map.values())
         self.coordinator = Agent(
             name="Coordinator",
             instructions="You are a coordinator that plans and synthesizes results",
@@ -22,17 +25,68 @@ class DynaAgent:
             model="gpt-4.1-mini",
         )
 
+    def pick(self, names=None):
+        if not names:
+            return self.tools
+
+        out = []
+        for name in names:
+            tool = self.tool_map.get(name)
+            if tool:
+                out.append(tool)
+
+        return out if out else self.tools
+
     def create(
-        self, name: str, role: str, instructions: str, model: str = "gpt-4.1-mini"
+        self,
+        name: str,
+        role: str,
+        instructions: str,
+        model: str = "gpt-4.1-mini",
+        tool_names=None,
     ):
+        tools = self.pick(tool_names)
+
+        if name in self.agents:
+            agent = self.agents[name]
+            agent.instructions = f"You are a {role}. {instructions}"
+            agent.tools = tools
+            agent.model = model
+            self.info[name] = {"role": role, "tools": tool_names or []}
+            return agent
+
         agent = Agent(
             name=name,
             instructions=f"You are a {role}. {instructions}",
-            tools=self.tools,
+            tools=tools,
             model=model,
         )
         self.agents[name] = agent
+        self.info[name] = {"role": role, "tools": tool_names or []}
         return agent
+
+    def snap(self):
+        note_text = "\n".join(self.mem["notes"][-2:])
+        out_text = "\n".join(
+            [f"- {name}: {out}" for name, out in self.mem["outs"].items()]
+        )
+
+        return f"Shared Notes:\n{note_text or 'None'}\n\nKnown Outputs:\n{out_text or 'None'}"
+
+    async def run(self, name: str, agent, question: str, rnd: int):
+        print(f"Running: {name} (Round {rnd})...")
+        prompt = work(name, self.info[name]["role"], question, self.snap(), rnd)
+
+        try:
+            if rnd > 1:
+                await asyncio.sleep(2)
+            result = await Runner.run(agent, prompt)
+            output = result.final_output
+            print(f"✓ {name}: {output[:100]}...\n")
+            return {"agent": name, "output": output}
+        except Exception as e:
+            print(f"✗ {name} failed: {e}")
+            return {"agent": name, "output": f"Error: {str(e)}"}
 
     async def execute(self, question: str):
         print(f"\n=== Question ===\n{question}\n")
@@ -52,9 +106,13 @@ class DynaAgent:
                 if tool_data.get("needs_new_tools") and tool_data.get("tools"):
                     print("=== Creating Tools ===")
                     for tool_spec in tool_data["tools"]:
+                        if tool_spec["name"] in self.tool_map:
+                            print(f"✓ Reusing: {tool_spec['name']}")
+                            continue
                         print(f"Creating: {tool_spec['name']}...")
-                        success = await build(self.coordinator, self.tools, tool_spec)
-                        if success:
+                        tool = await build(self.coordinator, self.tools, tool_spec)
+                        if tool:
+                            self.tool_map[tool_spec["name"]] = tool
                             self.coordinator.tools = self.tools
                             print(f"✓ Created: {tool_spec['name']}")
                     print()
@@ -81,9 +139,11 @@ class DynaAgent:
                         "name": "Solver",
                         "role": "Problem Solver",
                         "instructions": "Solve the task",
+                        "tools": ["calculator", "search"],
                     }
                 ],
                 "plan": ["Analyze and solve"],
+                "rounds": 1,
             }
 
         # Creating Agents
@@ -95,6 +155,7 @@ class DynaAgent:
                     "name": "Solver",
                     "role": "Problem Solver",
                     "instructions": "Solve the task",
+                    "tools": ["calculator", "search"],
                 }
             ]
 
@@ -103,24 +164,42 @@ class DynaAgent:
             role = spec.get("role", "Assistant")
             instructions = spec.get("instructions", "Help solve the task")
             model = spec.get("model", "gpt-4.1-mini")
-            self.create(name, role, instructions, model)
-            print(f"✓ Created: {name} ({role})")
+            tool_names = spec.get("tools")
+            reusing = name in self.agents
+            self.create(name, role, instructions, model, tool_names)
+            action = "Reused" if reusing else "Created"
+            print(f"✓ {action}: {name} ({role})")
         print()
 
-        # Executing
+        rounds = plan_data.get("rounds", 2)
+        try:
+            rounds = int(rounds)
+        except Exception:
+            rounds = 2
+        rounds = 1 if rounds < 1 else 2 if rounds > 2 else rounds
+
         print("=== Executing ===")
         results = []
-        for agent_name, agent in list(self.agents.items()):
-            print(f"Running: {agent_name}...")
-            try:
-                await asyncio.sleep(2)
-                result = await Runner.run(agent, question)
-                output = result.final_output
-                results.append({"agent": agent_name, "output": output})
-                print(f"✓ {agent_name}: {output[:100]}...\n")
-            except Exception as e:
-                print(f"✗ {agent_name} failed: {e}")
-                results.append({"agent": agent_name, "output": f"Error: {str(e)}"})
+        for rnd in range(1, rounds + 1):
+            print(f"--- Round {rnd} ---")
+            jobs = [
+                self.run(agent_name, agent, question, rnd)
+                for agent_name, agent in list(self.agents.items())
+            ]
+            results = await asyncio.gather(*jobs)
+
+            for item in results:
+                self.mem["outs"][item["agent"]] = item["output"]
+
+            if rnd < rounds:
+                print("=== Coordinator Note ===")
+                results_text = "\n".join(
+                    [f"- {r['agent']}: {r['output']}" for r in results]
+                )
+                msg = await Runner.run(self.coordinator, note(question, results_text, rnd))
+                note_text = msg.final_output
+                self.mem["notes"].append(note_text)
+                print(f"{note_text}\n")
 
         # Synthesis
         print("=== Synthesis ===")
