@@ -88,6 +88,8 @@ class DynaAgent:
 
         tool_result = await Runner.run(self.coordinator, analyze(question))
         tool_text = tool_result.final_output
+        if callback:
+            callback("tool_text", tool_text)
 
         try:
             if "{" in tool_text and "}" in tool_text:
@@ -96,8 +98,7 @@ class DynaAgent:
                 tool_data = json.loads(tool_text[start:end])
 
                 if tool_data.get("needs_new_tools") and tool_data.get("tools"):
-                    if callback:
-                        callback("creating_tools", tool_data["tools"])
+                    made = []
 
                     for tool_spec in tool_data["tools"]:
                         if tool_spec["name"] in self.tool_map:
@@ -107,6 +108,10 @@ class DynaAgent:
                         if tool:
                             self.tool_map[tool_spec["name"]] = tool
                             self.coordinator.tools = self.tools
+                            made.append(tool_spec)
+
+                    if callback:
+                        callback("tools", made)
         except:
             pass
 
@@ -137,6 +142,8 @@ class DynaAgent:
                 ],
                 "rounds": 1,
             }
+        if callback:
+            callback("plan", {"text": plan_text, "data": plan_data})
 
         agents_list = plan_data.get("agents", [])
         if not agents_list:
@@ -170,13 +177,16 @@ class DynaAgent:
 
         results = []
         for rnd in range(1, rounds + 1):
+            if callback:
+                callback("working", f"Round {rnd}")
+
             jobs = []
             for agent_name, agent in list(self.agents.items()):
-                if callback:
-                    callback("working", f"Round {rnd}: {agent_name}")
                 jobs.append(self.run(agent_name, agent, question, rnd))
 
             results = await asyncio.gather(*jobs)
+            if callback:
+                callback("round", {"rnd": rnd, "items": results})
 
             for item in results:
                 self.mem["outs"][item["agent"]] = item["output"]
@@ -186,7 +196,10 @@ class DynaAgent:
                     [f"- {r['agent']}: {r['output']}" for r in results]
                 )
                 msg = await Runner.run(self.coordinator, note(question, results_text, rnd))
-                self.mem["notes"].append(msg.final_output)
+                note_text = msg.final_output
+                self.mem["notes"].append(note_text)
+                if callback:
+                    callback("note", {"rnd": rnd, "text": note_text})
 
         if callback:
             callback("finalizing", None)
@@ -199,124 +212,130 @@ class DynaAgent:
         except:
             answer = results_text if results else "No results"
 
+        if callback:
+            callback("answer", answer)
+
         return answer, results
 
 
 st.set_page_config(page_title="DynaAgent", layout="centered")
 
-st.markdown(
-    """
-<style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    .agent {
-        background: white;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-radius: 4px;
-        border: 1px solid #e0e0e0;
-    }
-    .agent-name {
-        font-weight: 600;
-        color: #000;
-    }
-    .agent-role {
-        color: #666;
-        font-size: 0.9rem;
-    }
-    .tool {
-        background: #f8f9fa;
-        padding: 0.75rem;
-        margin: 0.4rem 0;
-        border-radius: 4px;
-        border: 1px solid #dee2e6;
-    }
-    .tool-name {
-        font-weight: 600;
-        color: #495057;
-        font-size: 0.9rem;
-    }
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
 st.title("DynaAgent")
+st.caption("Research multi-agent app")
 
 question = st.text_input("Question", placeholder="Ask anything...")
 
 if st.button("Submit"):
     if question:
-        tool_area = st.empty()
-        planning_area = st.empty()
-        agents_area = st.empty()
-        working_area = st.empty()
-        result_area = st.empty()
+        top_box = st.empty()
+        tool_box = st.empty()
+        plan_box = st.empty()
+        agent_box = st.empty()
+        work_box = st.empty()
+        ans_box = st.empty()
+
+        mem = {
+            "step": "Starting",
+            "tool": "",
+            "tools": [],
+            "plan": None,
+            "agents": [],
+            "runs": [],
+            "notes": {},
+            "ans": "",
+        }
+
+        def draw():
+            top_box.info(mem["step"])
+
+            with tool_box.container():
+                st.subheader("Tools")
+                if mem["tool"]:
+                    with st.expander("Tool analysis", expanded=False):
+                        st.text(mem["tool"])
+                if mem["tools"]:
+                    for item in mem["tools"]:
+                        st.write(f"- {item['name']}")
+                elif mem["tool"]:
+                    st.write("No new tools")
+
+            with plan_box.container():
+                st.subheader("Plan")
+                if mem["plan"]:
+                    data = mem["plan"]["data"]
+                    for item in data.get("plan", []):
+                        st.write(f"- {item}")
+                    st.caption(f"Rounds: {data.get('rounds', 1)}")
+                    with st.expander("Raw plan", expanded=False):
+                        st.text(mem["plan"]["text"])
+
+            with agent_box.container():
+                st.subheader("Agents")
+                for item in mem["agents"]:
+                    st.markdown(f"**{item['name']}**")
+                    st.caption(f"{item['role']} - {item.get('model', 'gpt-4.1-mini')}")
+                    if item.get("tools"):
+                        st.write(f"Tools: {', '.join(item['tools'])}")
+
+            with work_box.container():
+                st.subheader("Run")
+                for item in mem["runs"]:
+                    with st.expander(f"Round {item['rnd']}", expanded=True):
+                        for out in item["items"]:
+                            st.markdown(f"**{out['agent']}**")
+                            st.text(out["output"])
+                        if item["rnd"] in mem["notes"]:
+                            st.markdown("**Note**")
+                            st.text(mem["notes"][item["rnd"]])
+
+            with ans_box.container():
+                if mem["ans"]:
+                    st.divider()
+                    st.subheader("Answer")
+                    st.write(mem["ans"])
 
         def update(phase, data):
             if phase == "tool_analysis":
-                tool_area.info("Analyzing tools needed")
+                mem["step"] = "Analyzing tools"
 
-            elif phase == "creating_tools":
-                tool_area.empty()
-                with tool_area.container():
-                    st.subheader("Tools Created")
-                    for tool in data:
-                        st.markdown(
-                            f"""
-                        <div class="tool">
-                            <div class="tool-name">🔧 {tool["name"]}</div>
-                        </div>
-                        """,
-                            unsafe_allow_html=True,
-                        )
+            elif phase == "tool_text":
+                mem["tool"] = data
+
+            elif phase == "tools":
+                mem["tools"] = data
 
             elif phase == "planning":
-                if not data:
-                    tool_area.empty()
-                planning_area.info("Planning agents")
+                mem["step"] = "Planning agents"
+
+            elif phase == "plan":
+                mem["plan"] = data
 
             elif phase == "agents":
-                planning_area.empty()
-                with agents_area.container():
-                    st.subheader("Agents")
-                    for agent in data:
-                        model_display = agent.get("model", "gpt-4.1-mini")
-                        st.markdown(
-                            f"""
-                        <div class="agent">
-                            <div class="agent-name">{agent["name"]}</div>
-                            <div class="agent-role">{agent["role"]} • {model_display}</div>
-                        </div>
-                        """,
-                            unsafe_allow_html=True,
-                        )
+                mem["agents"] = data
 
             elif phase == "working":
-                working_area.info(f"{data} working")
+                mem["step"] = f"{data} running"
+
+            elif phase == "round":
+                mem["runs"].append(data)
+
+            elif phase == "note":
+                mem["notes"][data["rnd"]] = data["text"]
 
             elif phase == "finalizing":
-                working_area.info("Finalizing")
+                mem["step"] = "Finalizing"
+
+            elif phase == "answer":
+                mem["ans"] = data
+                mem["step"] = "Done"
+
+            draw()
 
         async def run():
             dynaagent = DynaAgent()
-            answer, results = await dynaagent.execute(question, update)
+            await dynaagent.execute(question, update)
 
-            working_area.empty()
-
-            with result_area.container():
-                st.divider()
-                st.subheader("Answer")
-                st.write(answer)
-
-                with st.expander("Details"):
-                    for r in results:
-                        st.markdown(f"**{r['agent']}**")
-                        st.text(
-                            r["output"][:400] + "..."
-                            if len(r["output"]) > 400
-                            else r["output"]
-                        )
-
+        draw()
         asyncio.run(run())
+    else:
+        st.warning("Enter a question")
