@@ -19,7 +19,7 @@ class DynaAgent:
         self.tool_map = {"calculator": calculator, "search": search}
         self.tools = list(self.tool_map.values())
         self.coordinator = Agent(
-            name="Coordinator",
+            name="Agent",
             instructions="You are a coordinator that plans and synthesizes results",
             tools=self.tools,
             model="gpt-5.4",
@@ -73,20 +73,162 @@ class DynaAgent:
 
         return f"Shared Notes:\n{note_text or 'None'}\n\nKnown Outputs:\n{out_text or 'None'}"
 
-    async def run(self, name: str, agent, question: str, rnd: int):
-        print(f"Running: {name} (Round {rnd})...")
-        prompt = work(name, self.info[name]["role"], question, self.snap(), rnd)
+    def fmt(self, text):
+        if text is None:
+            return ""
+
+        text = str(text)
+        raw = text.strip()
+        if not raw:
+            return ""
+
+        if raw[0] in ["{", "["]:
+            try:
+                return json.dumps(json.loads(raw), indent=2)
+            except Exception:
+                return text
+
+        return text
+
+    def parsejson(self, text, default=None):
+        if text is None:
+            return default
+
+        raw = str(text)
+        if "{" not in raw or "}" not in raw:
+            return default
 
         try:
-            if rnd > 1:
-                await asyncio.sleep(2)
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            return json.loads(raw[start:end])
+        except Exception:
+            return default
+
+    def callid(self, raw):
+        if isinstance(raw, dict):
+            return raw.get("call_id", "")
+
+        return getattr(raw, "call_id", "")
+
+    def toolname(self, raw):
+        if isinstance(raw, dict):
+            name = raw.get("name") or raw.get("tool_name")
+            kind = raw.get("type", "")
+        else:
+            name = getattr(raw, "name", None) or getattr(raw, "tool_name", None)
+            kind = getattr(raw, "type", "")
+
+        if name:
+            return name
+
+        if "web_search" in kind or "search" in kind:
+            return "search"
+
+        if kind.endswith("_call"):
+            kind = kind[:-5]
+        if kind.endswith("_output"):
+            kind = kind[:-7]
+
+        return kind.replace("_", " ") or "tool"
+
+    def toolin(self, raw):
+        if isinstance(raw, dict):
+            text = raw.get("arguments") or raw.get("input") or raw.get("query") or ""
+        else:
+            text = (
+                getattr(raw, "arguments", None)
+                or getattr(raw, "input", None)
+                or getattr(raw, "query", None)
+                or ""
+            )
+
+        return self.fmt(text)
+
+    def toolkind(self, raw):
+        if isinstance(raw, dict):
+            kind = raw.get("type", "")
+        else:
+            kind = getattr(raw, "type", "")
+
+        return kind.replace("_", " ") or "tool"
+
+    def read(self, items):
+        out = []
+        ids = {}
+        last = None
+
+        for item in items:
+            kind = getattr(item, "type", "")
+
+            if kind == "tool_call_item":
+                raw = item.raw_item
+                name = self.toolname(raw)
+                call_id = self.callid(raw)
+                one = {
+                    "kind": "tool",
+                    "name": name,
+                    "inp": self.toolin(raw),
+                    "out": "",
+                    "proc": self.toolkind(raw),
+                }
+                if call_id:
+                    ids[call_id] = one
+                out.append(one)
+                last = one
+
+            elif kind == "tool_call_output_item":
+                raw = item.raw_item
+                call_id = self.callid(raw)
+                one = ids.get(call_id, last)
+                if one:
+                    one["name"] = one["name"] or self.toolname(raw)
+                    one["out"] = self.fmt(item.output)
+                else:
+                    out.append(
+                        {
+                            "kind": "tool",
+                            "name": self.toolname(raw),
+                            "inp": "",
+                            "out": self.fmt(item.output),
+                            "proc": self.toolkind(raw),
+                        }
+                    )
+
+        return out
+
+    def show(self, who: str, text: str = "", code: str = ""):
+        print(f"{who}: {text}")
+        if code:
+            print(code)
+        print()
+
+    async def run(self, name: str, agent, question: str, rnd: int):
+        prompt = work(name, self.info[name]["role"], question, self.snap(), rnd)
+        self.show("Agent", f"Passed the task to `{name}`.")
+
+        try:
             result = await Runner.run(agent, prompt)
-            output = result.final_output
-            print(f"✓ {name}: {output[:100]}...\n")
-            return {"agent": name, "output": output}
+            item = {
+                "agent": name,
+                "output": result.final_output,
+                "trace": self.read(result.new_items),
+            }
+
+            for msg in item["trace"]:
+                if msg.get("inp"):
+                    self.show(name, f"Used `{msg['name']}` with this input.", msg["inp"])
+                else:
+                    self.show(name, f"Used `{msg['name']}`.")
+                if msg.get("out"):
+                    self.show(name, f"`{msg['name']}` returned this output.", msg["out"])
+
+            self.show(name, item["output"])
+            return item
         except Exception as e:
-            print(f"✗ {name} failed: {e}")
-            return {"agent": name, "output": f"Error: {str(e)}"}
+            item = {"agent": name, "output": f"Error: {str(e)}", "trace": []}
+            self.show(name, item["output"])
+            return item
 
     async def pickpath(self, question: str):
         try:
@@ -104,55 +246,44 @@ class DynaAgent:
         return False, ""
 
     async def execute(self, question: str):
-        print(f"\n=== Question ===\n{question}\n")
-
-        print("=== Route Check ===")
         direct, answer = await self.pickpath(question)
         if direct and answer:
-            print("Direct reply selected\n")
-            print(f"Final Answer: {answer}\n")
+            self.show("Agent", answer)
             return answer
 
-        # Tool Analysis
-        print("=== Tool Analysis ===")
         tool_result = await Runner.run(self.coordinator, analyze(question))
         tool_text = tool_result.final_output
-        print(f"Tool Analysis: {tool_text}\n")
 
         try:
-            if "{" in tool_text and "}" in tool_text:
-                start = tool_text.find("{")
-                end = tool_text.rfind("}") + 1
-                tool_data = json.loads(tool_text[start:end])
-
-                if tool_data.get("needs_new_tools") and tool_data.get("tools"):
-                    print("=== Creating Tools ===")
-                    for tool_spec in tool_data["tools"]:
-                        if tool_spec["name"] in self.tool_map:
-                            print(f"✓ Reusing: {tool_spec['name']}")
-                            continue
-                        print(f"Creating: {tool_spec['name']}...")
-                        tool, code, prompt = await build(self.coordinator, self.tools, tool_spec)
-                        if tool:
-                            self.tool_map[tool_spec["name"]] = tool
-                            self.coordinator.tools = self.tools
-                            print(f"✓ Created: {tool_spec['name']}")
-                    print()
+            tool_data = self.parsejson(tool_text, {})
+            if tool_data.get("needs_new_tools") and tool_data.get("tools"):
+                pending = [
+                    tool_spec
+                    for tool_spec in tool_data["tools"]
+                    if tool_spec["name"] not in self.tool_map
+                ]
+                for tool_spec in pending:
+                    desc = tool_spec.get("description", "").strip()
+                    text = f"I need to create `{tool_spec['name']}`."
+                    if desc:
+                        text = f"{text} {desc}"
+                    self.show("Agent", text)
+                    tool, code, _ = await build(self.coordinator, self.tools, tool_spec)
+                    if tool:
+                        self.tool_map[tool_spec["name"]] = tool
+                        self.coordinator.tools = self.tools
+                        self.show("Agent", f"Created `{tool_spec['name']}`.", code)
+                    else:
+                        self.show("Agent", f"Failed to create `{tool_spec['name']}`.")
         except Exception as e:
-            print(f"Tool creation skipped: {e}\n")
+            self.show("Agent", f"Tool creation skipped: {e}")
 
-        # Agent Planning
-        print("=== Agent Planning ===")
         plan_result = await Runner.run(self.coordinator, planner(question))
         plan_text = plan_result.final_output
-        print(f"Plan: {plan_text}\n")
 
         try:
-            if "{" in plan_text and "}" in plan_text:
-                start = plan_text.find("{")
-                end = plan_text.rfind("}") + 1
-                plan_data = json.loads(plan_text[start:end])
-            else:
+            plan_data = self.parsejson(plan_text, None)
+            if not plan_data:
                 raise ValueError("No JSON found")
         except Exception:
             plan_data = {
@@ -169,8 +300,6 @@ class DynaAgent:
                 "maxrounds": 1,
             }
 
-        # Creating Agents
-        print("=== Creating Agents ===")
         agents_created = plan_data.get("agents", [])
         if not agents_created:
             agents_created = [
@@ -189,11 +318,9 @@ class DynaAgent:
             instructions = spec.get("instructions", "Help solve the task")
             model = spec.get("model", "gpt-5-mini")
             tool_names = spec.get("tools")
-            reusing = name in self.agents
             self.create(name, role, instructions, model, tool_names)
-            action = "Reused" if reusing else "Created"
-            print(f"✓ {action}: {name} ({role})")
-        print()
+            tool_text = f" Tools: {', '.join(tool_names)}." if tool_names else ""
+            self.show("Agent", f"Created `{name}`.{tool_text}", instructions)
 
         maxrounds = plan_data.get("maxrounds", plan_data.get("max_rounds", plan_data.get("rounds", 2)))
         try:
@@ -202,10 +329,8 @@ class DynaAgent:
             maxrounds = 2
         maxrounds = 1 if maxrounds < 1 else 3 if maxrounds > 3 else maxrounds
 
-        print("=== Executing ===")
         results = []
         for rnd in range(1, maxrounds + 1):
-            print(f"--- Round {rnd} ---")
             jobs = [
                 self.run(agent_name, agent, question, rnd)
                 for agent_name, agent in list(self.agents.items())
@@ -216,7 +341,6 @@ class DynaAgent:
                 self.mem["outs"][item["agent"]] = item["output"]
 
             if rnd < maxrounds:
-                print("=== Checking Round ===")
                 results_text = "\n".join(
                     [f"- {r['agent']}: {r['output']}" for r in results]
                 )
@@ -233,28 +357,23 @@ class DynaAgent:
                     done = rnd > 1
 
                 if done:
-                    print("Round is enough\n")
                     break
 
-                print("=== Coordinator Note ===")
                 msg = await Runner.run(self.coordinator, note(question, results_text, rnd))
                 note_text = msg.final_output
                 self.mem["notes"].append(note_text)
-                print(f"{note_text}\n")
+                self.show("Agent", note_text)
 
-        # Synthesis
-        print("=== Synthesis ===")
         results = "\n".join([f"- {r['agent']}: {r['output']}" for r in results])
 
         try:
-            await asyncio.sleep(2)
             final = await Runner.run(self.coordinator, synthesize(results))
             answer = final.final_output
-            print(f"Final Answer: {answer}\n")
+            self.show("Agent", answer)
         except Exception as e:
-            print(f"Synthesis failed: {e}")
             answer = results if results else "No results available"
-            print(f"Final Answer (from raw results): {answer}\n")
+            self.show("Agent", f"Synthesis failed: {e}")
+            self.show("Agent", answer)
 
         return answer
 

@@ -18,7 +18,7 @@ class DynaAgent:
         self.tool_map = {"calculator": calculator, "search": search}
         self.tools = list(self.tool_map.values())
         self.coordinator = Agent(
-            name="Coordinator",
+            name="Agent",
             instructions="You are a coordinator that plans and synthesizes results",
             tools=self.tools,
             model="gpt-5.4",
@@ -88,6 +88,21 @@ class DynaAgent:
                 return text
 
         return text
+
+    def parsejson(self, text, default=None):
+        if text is None:
+            return default
+
+        raw = str(text)
+        if "{" not in raw or "}" not in raw:
+            return default
+
+        try:
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            return json.loads(raw[start:end])
+        except:
+            return default
 
     def callid(self, raw):
         if isinstance(raw, dict):
@@ -240,7 +255,7 @@ class DynaAgent:
     async def run(self, name: str, agent, question: str, rnd: int, callback=None):
         prompt = work(name, self.info[name]["role"], question, self.snap(), rnd)
         if callback:
-            callback("agent_run", {"rnd": rnd, "name": name, "step": "start"})
+            callback("dispatch", {"rnd": rnd, "name": name, "prompt": prompt})
 
         try:
             result = await Runner.run(agent, prompt)
@@ -279,57 +294,59 @@ class DynaAgent:
             callback("tool_text", tool_text)
 
         try:
-            if "{" in tool_text and "}" in tool_text:
-                start = tool_text.find("{")
-                end = tool_text.rfind("}") + 1
-                tool_data = json.loads(tool_text[start:end])
+            tool_data = self.parsejson(tool_text, {})
 
-                if tool_data.get("needs_new_tools") and tool_data.get("tools"):
-                    made = []
+            if tool_data.get("needs_new_tools") and tool_data.get("tools"):
+                made = []
+                pending = [
+                    tool_spec
+                    for tool_spec in tool_data["tools"]
+                    if tool_spec["name"] not in self.tool_map
+                ]
 
-                    for tool_spec in tool_data["tools"]:
-                        if tool_spec["name"] in self.tool_map:
-                            continue
+                if pending and callback:
+                    callback("tool_needed", pending)
 
+                for tool_spec in pending:
+                    if callback:
+                        callback(
+                            "tool",
+                            {
+                                "name": tool_spec["name"],
+                                "step": "making",
+                                "desc": tool_spec.get("description", ""),
+                            },
+                        )
+                    tool, code, prompt = await build(self.coordinator, self.tools, tool_spec)
+                    if tool:
+                        self.tool_map[tool_spec["name"]] = tool
+                        self.coordinator.tools = self.tools
+                        made.append(tool_spec)
                         if callback:
                             callback(
                                 "tool",
                                 {
                                     "name": tool_spec["name"],
-                                    "step": "making",
-                                    "desc": tool_spec.get("description", ""),
-                                },
-                            )
-                        tool, code, prompt = await build(self.coordinator, self.tools, tool_spec)
-                        if tool:
-                            self.tool_map[tool_spec["name"]] = tool
-                            self.coordinator.tools = self.tools
-                            made.append(tool_spec)
-                            if callback:
-                                callback(
-                                    "tool",
-                                    {
-                                        "name": tool_spec["name"],
-                                        "step": "made",
-                                        "desc": tool_spec.get("description", ""),
-                                        "prompt": prompt,
-                                        "code": code,
-                                    },
-                                )
-                        elif callback:
-                            callback(
-                                "tool",
-                                {
-                                    "name": tool_spec["name"],
-                                    "step": "failed",
+                                    "step": "made",
                                     "desc": tool_spec.get("description", ""),
                                     "prompt": prompt,
                                     "code": code,
                                 },
                             )
+                    elif callback:
+                        callback(
+                            "tool",
+                            {
+                                "name": tool_spec["name"],
+                                "step": "failed",
+                                "desc": tool_spec.get("description", ""),
+                                "prompt": prompt,
+                                "code": code,
+                            },
+                        )
 
-                    if callback:
-                        callback("tools", made)
+                if callback:
+                    callback("tools", made)
         except:
             pass
 
@@ -446,7 +463,6 @@ class DynaAgent:
 st.set_page_config(page_title="DynaAgent", layout="centered")
 
 st.title("DynaAgent")
-st.caption("Research multi-agent app")
 
 if "msgs" not in st.session_state:
     st.session_state.msgs = []
@@ -465,6 +481,21 @@ def add(who, text, av, kind="text", name="", info=None):
         {"who": who, "text": text, "av": av, "kind": kind, "name": name, "info": info or {}}
     )
 
+
+def codelang(text):
+    raw = (text or "").strip()
+    if not raw:
+        return "text"
+    if raw[0] in ["{", "["]:
+        return "json"
+    if raw.startswith("def ") or raw.startswith("import ") or "\ndef " in raw:
+        return "python"
+    return "text"
+
+
+def detailtitle(item):
+    return item["info"].get("title") or item["name"] or "Details"
+
 def ask(text):
     if not st.session_state.hist:
         return text
@@ -476,7 +507,10 @@ def ask(text):
     return "\n\n".join(out)
 
 def draw():
-    top_box.info(st.session_state.step)
+    if st.session_state.step in ["Ready", "Done"]:
+        top_box.empty()
+    else:
+        top_box.info(st.session_state.step)
 
     with chat_box.container():
         for item in st.session_state.msgs:
@@ -486,186 +520,140 @@ def draw():
                 if item["who"] != "You":
                     st.markdown(f"**{item['who']}**")
 
-                if item["kind"] == "call":
-                    with st.expander(f"Tool input - {item['name']}", expanded=False):
-                        st.caption("Input")
-                        if item["text"]:
-                            st.code(item["text"])
-                elif item["kind"] == "tool":
-                    with st.expander(f"Tool call - {item['name']}", expanded=False):
-                        if item["info"].get("proc"):
-                            st.caption(f"Process: {item['info']['proc']}")
-                        if item["info"].get("inp"):
-                            st.caption("Input")
-                            st.code(item["info"]["inp"])
-                        if item["info"].get("out"):
-                            st.caption("Output")
-                            st.code(item["info"]["out"])
-                elif item["kind"] == "agent":
-                    st.markdown(item["text"])
-                    with st.expander(f"Agent setup - {item['name']}", expanded=False):
-                        st.caption(f"Role: {item['info'].get('role', '')}")
-                        st.caption(f"Model: {item['info'].get('model', '')}")
-                        tools = item["info"].get("tools", [])
-                        if tools:
-                            st.caption(f"Tools: {', '.join(tools)}")
-                        if item["info"].get("ins"):
-                            st.caption("Prompt")
-                            st.code(item["info"]["ins"])
-                elif item["kind"] == "make":
-                    st.markdown(item["text"])
-                    with st.expander(f"Tool setup - {item['name']}", expanded=False):
-                        if item["info"].get("desc"):
-                            st.caption("Description")
-                            st.write(item["info"]["desc"])
-                        if item["info"].get("prompt"):
-                            st.caption("Prompt")
-                            st.code(item["info"]["prompt"])
-                        if item["info"].get("code"):
-                            st.caption("Code")
-                            st.code(item["info"]["code"], language="python")
-                elif item["kind"] == "out":
-                    with st.expander(f"Tool output - {item['name']}", expanded=False):
-                        st.caption("Output")
-                        st.code(item["text"])
-                else:
-                    st.markdown(item["text"])
+                st.markdown(item["text"])
+                if item["kind"] == "code" and item["info"].get("code"):
+                    with st.expander(detailtitle(item), expanded=False):
+                        st.code(
+                            item["info"]["code"],
+                            language=item["info"].get("lang", codelang(item["info"]["code"])),
+                        )
 
 draw()
 
 question = st.chat_input("Ask anything...")
 
 if question:
-    box = {"made": False, "tool_done": False}
-
     add("You", question, "🙂")
-    st.session_state.step = "Starting"
+    st.session_state.step = "Working..."
     draw()
 
     def update(phase, data):
         if phase == "route":
-            st.session_state.step = "Checking path"
-            add("Coordinator", "Checking if this needs research or a direct reply.", "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "direct":
-            st.session_state.step = "Direct reply"
-            add("Coordinator", "Direct reply is enough here.", "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "tool_analysis":
-            st.session_state.step = "Analyzing tools"
-            add("Coordinator", "Checking what tools this task needs.", "🧠")
+            st.session_state.step = "Working..."
+
+        elif phase == "tool_needed":
+            for item in data:
+                desc = item.get("description", "").strip()
+                text = f"I need to create `{item['name']}`."
+                if desc:
+                    text = f"{text} {desc}"
+                add("Agent", text, "🧠")
 
         elif phase == "tool":
-            box["made"] = True
-            if data["step"] == "making":
+            if data["step"] == "made":
                 add(
-                    "Tools",
-                    f"Creating `{data['name']}`.",
-                    "🛠️",
-                    "make",
-                    data["name"],
-                    {"desc": data.get("desc", "")},
-                )
-            elif data["step"] == "made":
-                add(
-                    "Tools",
+                    "Agent",
                     f"Created `{data['name']}`.",
-                    "🛠️",
-                    "make",
+                    "🧠",
+                    "code",
                     data["name"],
                     {
-                        "desc": data.get("desc", ""),
-                        "prompt": data.get("prompt", ""),
                         "code": data.get("code", ""),
+                        "lang": "python",
+                        "title": f"{data['name']} code",
                     },
                 )
             elif data["step"] == "failed":
                 add(
-                    "Tools",
+                    "Agent",
                     f"Failed to create `{data['name']}`.",
-                    "🛠️",
-                    "make",
-                    data["name"],
-                    {
-                        "desc": data.get("desc", ""),
-                        "prompt": data.get("prompt", ""),
-                        "code": data.get("code", ""),
-                    },
+                    "🧠",
                 )
 
         elif phase == "planning":
-            st.session_state.step = "Planning agents"
-            if not box["tool_done"]:
-                if not box["made"]:
-                    add("Tools", "No new tools needed.", "🛠️")
-                box["tool_done"] = True
-            add("Coordinator", "Planning the agent team.", "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "plan":
-            plan = data["data"].get("plan", [])
-            text = "\n".join([f"- {item}" for item in plan])
-            text = text or "Plan ready."
-            maxrounds = data["data"].get("maxrounds", data["data"].get("max_rounds", data["data"].get("rounds", 1)))
-            text = f"{text}\n\nMax rounds: {maxrounds}"
-            add("Coordinator", text, "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "agents":
             for item in data:
+                tools = item.get("tools", [])
+                extra = f" Tools: {', '.join(tools)}." if tools else ""
                 add(
-                    item["name"],
-                    f"Created `{item['name']}`.",
-                    "🤖",
-                    "agent",
+                    "Agent",
+                    f"Created `{item['name']}`.{extra}",
+                    "🧠",
+                    "code",
                     item["name"],
                     {
-                        "role": item.get("role", ""),
-                        "model": item.get("model", ""),
-                        "tools": item.get("tools", []),
-                        "ins": item.get("instructions", ""),
+                        "code": item.get("instructions", ""),
+                        "lang": "text",
+                        "title": f"{item['name']} prompt",
                     },
                 )
 
+        elif phase == "dispatch":
+            add("Agent", f"Passed the task to `{data['name']}`.", "🧠")
+
         elif phase == "working":
-            st.session_state.step = f"{data} running"
-            add("Coordinator", f"{data} started.", "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "agent_run":
-            if data["step"] == "start":
-                add(data["name"], f"Working in round {data['rnd']}.", "🤖")
-            elif data["step"] == "done":
+            if data["step"] == "done":
                 item = data["data"]
                 for msg in item["trace"]:
-                    add(
-                        data["name"],
-                        f"Used `{msg['name']}`.",
-                        "🤖",
-                        "tool",
-                        msg["name"],
-                        {
-                            "proc": msg.get("proc", ""),
-                            "inp": msg.get("inp", ""),
-                            "out": msg.get("out", ""),
-                        },
-                    )
+                    if msg.get("inp"):
+                        add(
+                            data["name"],
+                            f"Used `{msg['name']}` with this input.",
+                            "🤖",
+                            "code",
+                            msg["name"],
+                            {
+                                "code": msg.get("inp", ""),
+                                "lang": codelang(msg.get("inp", "")),
+                                "title": f"{msg['name']} input",
+                            },
+                        )
+                    else:
+                        add(data["name"], f"Used `{msg['name']}`.", "🤖")
+                    if msg.get("out"):
+                        add(
+                            data["name"],
+                            f"`{msg['name']}` returned this output.",
+                            "🤖",
+                            "code",
+                            msg["name"],
+                            {
+                                "code": msg.get("out", ""),
+                                "lang": codelang(msg.get("out", "")),
+                                "title": f"{msg['name']} output",
+                            },
+                        )
                 add(data["name"], item["output"], "🤖")
 
         elif phase == "judge":
-            st.session_state.step = "Checking round"
-            add("Coordinator", f"Checking round {data['rnd']}.", "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "enough":
-            add("Coordinator", f"Round {data['rnd']} is enough.", "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "note":
-            add("Coordinator", data["text"], "🧠")
+            add("Agent", data["text"], "🧠")
 
         elif phase == "finalizing":
-            st.session_state.step = "Finalizing"
-            add("Coordinator", "Writing the final answer.", "🧠")
+            st.session_state.step = "Working..."
 
         elif phase == "answer":
             st.session_state.step = "Done"
-            add("Answer", data, "✅")
+            add("Agent", data, "🧠")
 
         draw()
 
