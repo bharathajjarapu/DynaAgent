@@ -1,0 +1,13 @@
+[project]
+name = "dynaagent"
+version = "0.2.0"
+description = "Dynamic multi-agent problem solving: task DAGs, generated agents and tools, budget-aware convergence."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.optional-dependencies]
+ui = ["streamlit>=1.65.0"]
+
+[tool.uv]
+package = false
