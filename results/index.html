@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DynaAgent — technical explainer</title>
+<style>
+  body { margin: 0; padding: 24px; background: white; color: #172335; font: 17px/1.5 system-ui, sans-serif; }
+  main { max-width: 1120px; margin: auto; }
+  p { color: #596778; margin: 8px 0 24px; }
+  video { width: 100%; display: block; background: white; }
+  video::cue { color: #172335; background: rgb(255 255 255 / .94); font: 22px sans-serif; }
+  a { color: #385bc7; }
+  nav { display: flex; justify-content: center; gap: 24px; margin-top: 20px; flex-wrap: wrap; }
+</style>
+<main>
+  <video id="film" aria-label="DynaAgent technical explainer" controls preload="metadata" playsinline poster="DynaAgent.png">
+    <track kind="subtitles" src="DynaAgent.vtt" srclang="en" label="English" default>
+    <a href="DynaAgent.webm">Download the technical explainer</a>
+  </video>
+  <nav aria-label="Video files">
+    <a href="DynaAgent.webm" download>Download video</a>
+    <a href="DynaAgent.srt" download>Subtitles (SRT)</a>
+  </nav>
+</main>
+<script>
+  // shortcut: buffer the whole video for seeking on basic file servers; use HTTP Range hosting for larger videos.
+  (async () => {
+    const response = await fetch('DynaAgent.webm');
+    if (!response.ok) throw new Error(`Video HTTP ${response.status}`);
+    document.querySelector('#film').src = URL.createObjectURL(await response.blob());
+  })().catch(() => {
+    const message = document.createElement('p');
+    message.textContent = 'Preview unavailable. Use the video download link below.';
+    document.querySelector('#film').after(message);
+  });
+</script>
+</html>

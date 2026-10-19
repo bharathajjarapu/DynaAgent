@@ -2,4 +2,11 @@
 .venv
 __pycache__
 *.db
-results/
+/results/*
+!/results/DynaAgent.webm
+!/results/DynaAgent.png
+!/results/DynaAgent.srt
+!/results/DynaAgent.vtt
+!/results/index.html
+/video/
+/tmp/

@@ -9,6 +9,14 @@ Department of AI & Data Science, VNR Vignana Jyothi Institute of Engineering & T
 
 **Keywords:** dynamic agent generation · multi-agent systems · task decomposition · LLM orchestration · budget-aware convergence
 
+<video controls preload="metadata" width="960" poster="https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.png" src="https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.webm">
+  <track kind="subtitles" srclang="en" label="English" src="https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.vtt">
+</video>
+
+[Watch the technical explainer](https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.webm) · [Subtitles](results/DynaAgent.srt)
+
+Regeneration sources are kept locally in `video/` (Git-ignored).
+
 ---
 
 ## 1. Formulation

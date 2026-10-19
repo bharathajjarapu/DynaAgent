@@ -1,0 +1,201 @@
+1
+00:00:03,450 --> 00:00:07,113
+A question may need a direct answer, dependent tasks, or a
+tool.
+
+2
+00:00:07,293 --> 00:00:11,003
+DynaAgent lets a coordinator construct that workflow at
+runtime.
+
+3
+00:00:11,183 --> 00:00:15,088
+Its agents are roles and tool selections around an
+external model.
+
+4
+00:00:16,333 --> 00:00:18,224
+Here is the complete architecture.
+
+5
+00:00:18,404 --> 00:00:24,985
+The command line or Streamlit sends context to a
+coordinator, which defines workers and a dependency graph.
+
+6
+00:00:25,165 --> 00:00:29,585
+Ready workers execute, optionally vote, and pass results
+to a reviewer.
+
+7
+00:00:29,765 --> 00:00:35,588
+Review returns an answer or schedules follow up tasks;
+simple questions can return directly.
+
+8
+00:00:35,768 --> 00:00:42,067
+SQLite retains successful plans and tool code, while
+recent conversation stays in session memory.
+
+9
+00:00:42,247 --> 00:00:48,211
+Every model role uses the Responses client, under a shared
+budget, with tools invoked as needed.
+
+10
+00:00:49,450 --> 00:00:51,968
+Each task declares dependencies and a worker.
+
+11
+00:00:52,148 --> 00:00:55,022
+The graph links task outputs to the tasks that need them.
+
+12
+00:00:55,202 --> 00:00:59,678
+Independent tasks run concurrently, and the scheduler
+records their outputs.
+
+13
+00:00:59,858 --> 00:01:05,711
+A dependent task becomes ready when all its dependencies
+finish, using their outputs as context.
+
+14
+00:01:06,950 --> 00:01:10,501
+A worker combines a role, instructions, and selected
+tools.
+
+15
+00:01:10,681 --> 00:01:14,295
+Its prompt brings together the question and dependency
+outputs.
+
+16
+00:01:14,475 --> 00:01:18,113
+Matching agent names reuse the persona and merge tool
+sets.
+
+17
+00:01:18,293 --> 00:01:21,992
+The Responses client sends the request to the configured
+model.
+
+18
+00:01:23,233 --> 00:01:26,665
+Workers can use a calculator or provider hosted search.
+
+19
+00:01:26,845 --> 00:01:32,884
+For a new tool, the coordinator generates a Python
+function, checks its definition, and registers it.
+
+20
+00:01:33,064 --> 00:01:36,673
+Execution uses a separate interpreter with resource
+limits.
+
+21
+00:01:36,853 --> 00:01:39,738
+The first successful call saves the generated tool.
+
+22
+00:01:39,918 --> 00:01:42,728
+Saved tools return to the registry on startup.
+
+23
+00:01:43,967 --> 00:01:47,622
+Twenty five times four is the command line's default
+example.
+
+24
+00:01:47,802 --> 00:01:53,953
+The calculator parses a syntax tree, accepts arithmetic
+nodes, and evaluates multiplication.
+
+25
+00:01:54,133 --> 00:01:58,388
+Its text result, one hundred, returns as a function call
+output.
+
+26
+00:01:58,568 --> 00:02:02,183
+The client adds that output to the model context for the
+next step.
+
+27
+00:02:03,417 --> 00:02:06,949
+With at least two agents, up to five propose answers and
+vote.
+
+28
+00:02:07,129 --> 00:02:11,499
+Anonymous voting hides authors and shuffles candidate
+order for each voter.
+
+29
+00:02:11,679 --> 00:02:15,727
+Plurality selects the answer, with ties following the
+earliest ballot.
+
+30
+00:02:15,907 --> 00:02:20,572
+Identified mode shows authors and a live tally as agents
+vote in sequence.
+
+31
+00:02:21,817 --> 00:02:25,453
+The reviewer receives worker outputs and the chosen
+candidate.
+
+32
+00:02:25,633 --> 00:02:29,672
+It can request follow up tasks, returning execution to the
+scheduler.
+
+33
+00:02:29,852 --> 00:02:36,227
+Refinement uses a reviewer score threshold of eight, a
+score gain threshold of one, and up to three rounds.
+
+34
+00:02:36,407 --> 00:02:40,829
+The loop also finishes when there are no new tasks,
+returning the answer text.
+
+35
+00:02:42,067 --> 00:02:45,342
+SQLite retains plans and generated tool code.
+
+36
+00:02:45,522 --> 00:02:49,367
+Plans with a reviewer score of at least eight are stored
+after execution.
+
+37
+00:02:49,547 --> 00:02:54,834
+Keyword search retrieves up to two matching plans with
+scores of at least seven for the coordinator.
+
+38
+00:02:55,014 --> 00:02:57,715
+Saved tools load into the registry on startup.
+
+39
+00:02:57,895 --> 00:03:02,272
+The four most recent chat turns supply session context for
+the next question.
+
+40
+00:03:03,517 --> 00:03:08,225
+DynaAgent connects task specific workers and tools through
+a dependency graph.
+
+41
+00:03:08,405 --> 00:03:14,083
+Optional voting and review guide the answer, while memory
+carries plans and tools between runs.
+
+42
+00:03:14,263 --> 00:03:19,741
+The interface returns the final answer and exposes the
+workflow through execution events.
