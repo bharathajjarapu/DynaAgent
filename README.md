@@ -9,11 +9,9 @@ Department of AI & Data Science, VNR Vignana Jyothi Institute of Engineering & T
 
 **Keywords:** dynamic agent generation · multi-agent systems · task decomposition · LLM orchestration · budget-aware convergence
 
-<video controls preload="metadata" width="960" poster="https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.png" src="https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.webm">
-  <track kind="subtitles" srclang="en" label="English" src="https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.vtt">
-</video>
+https://github.com/user-attachments/assets/b2f4c70d-527d-4db2-8607-613b5ed8f43d
 
-[Watch the technical explainer](https://raw.githubusercontent.com/bharathajjarapu/DynaAgent/main/results/DynaAgent.webm) · [Subtitles](results/DynaAgent.srt)
+[Subtitles](results/DynaAgent.srt)
 
 Regeneration sources are kept locally in `video/` (Git-ignored).
 
@@ -146,4 +144,4 @@ app.py      Streamlit UI
 
 ## License
 
-Proprietary, all rights reserved; see [LICENSE](LICENSE). Also: [Security](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md).
+MIT; see [LICENSE](LICENSE). Also: [Security](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md).
